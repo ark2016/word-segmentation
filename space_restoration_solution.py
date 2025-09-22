@@ -12,60 +12,76 @@ import json
 
 
 class SpaceRestoration:
-    def __init__(self, vllm_url: str = "http://localhost:8000"):
-        self.vllm_url = vllm_url
+    def __init__(self, ollama_url: str = "http://localhost:11434"):
+        self.ollama_url = ollama_url
+        self.model_name = "hf.co/Vikhrmodels/QVikhr-3-1.7B-Instruction-noreasoning-GGUF:Q4_K_M"
 
     def query_llm(self, text: str) -> str:
-        """Запрос к LLM через vLLM API для получения позиций пробелов"""
+        """Запрос к LLM через Ollama API для получения позиций пробелов"""
         try:
-            prompt = f"""Задача: найти позиции где нужно вставить пробелы в тексте без пробелов.
+            prompt = f"""<task>Задача: найти позиции где нужно вставить пробелы в тексте без пробелов (задача word segmentation). 
+            Тебуется вернуть только ответ, а именно числа, перечисленные через запятую в квадратных скобках. </task>
 
-Верни только список чисел - позиции символов, после которых нужно вставить пробел.
-Позиции считаются с 0.
-
-Примеры:
-Текст: куплюайфон14про
-Позиции: [5, 11, 13]
-
-Текст: ищудомвПодмосковье
-Позиции: [3, 6, 7]
-
-Текст: сдаюквартирусмебельюитехникой
-Позиции: [4, 12, 13, 21, 22]
-
-Текст: {text}
-Позиции:"""
+            <note> ВАЖНО: Отвечай только списком чисел в квадратных скобках. Никаких объяснений, рассуждений или дополнительного текста.</note>
+            <examples>
+                <text>
+                куплюайфон17max
+                </text>
+                <answer>
+                [5, 11, 13]
+                </answer>
+                <text>
+                ищудомвПодмосковье
+                </text>
+                <answer>
+                [3, 6, 7]
+                </answer>
+                <text>
+                сдаюквартирусмебельюитехникой
+                </text>
+                <answer>
+                [4, 12, 13, 21, 22]
+                </answer>
+            </examples>
+            <input>
+                <text>
+                {text}
+                </text>
+            </input>
+            """
 
             payload = {
-                "model": "QVikhr-3-1.7B-Instruction-noreasoning.Q4_K_M",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.1,
-                "max_tokens": 256,
-                "stop": ["\n", "Текст:"]
+                "model": self.model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.0,
+                    "top_p": 0.1,
+                    "num_predict": 200,
+                    "repeat_penalty": 1.0
+                }
             }
 
             response = requests.post(
-                f"{self.vllm_url}/v1/chat/completions",
+                f"{self.ollama_url}/api/generate",
                 json=payload,
                 timeout=60
             )
 
             if response.status_code == 200:
+                
                 result = response.json()
-                content = result['choices'][0]['message']['content'].strip()
+                content = result['response'].strip()
 
-                # Очищаем результат и ищем список
-                lines = content.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if line and ('[' in line and ']' in line):
-                        return line
-
+                # Ищем список чисел в квадратных скобках с помощью регулярки
+                import re
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+                match = re.search(r'\[(\d+(?:,\s*\d+)*|)\]', content)
+                if match:
+                    return match.group(0)
                 return content
             else:
-                print(f"LLM API error: {response.status_code}, {response.text}")
+                print(f"Ollama API error: {response.status_code}, {response.text}")
                 return ""
 
         except Exception as e:
@@ -157,26 +173,29 @@ def main():
     """Основная функция обработки датасета"""
 
     # Инициализация модели
-    vllm_url = os.getenv('VLLM_API_URL', 'http://localhost:8000')
-    model = SpaceRestoration(vllm_url)
+    ollama_url = os.getenv('OLLAMA_API_URL', 'http://localhost:11434')
+    model = SpaceRestoration(ollama_url)
 
     # Проверяем доступность API
     try:
-        test_response = requests.get(f"{vllm_url}/health", timeout=10)
+        test_response = requests.get(f"{ollama_url}/api/tags", timeout=10)
         if test_response.status_code != 200:
-            print(f"VLLM API недоступен по адресу {vllm_url}")
-            print("Убедитесь, что vLLM сервер запущен")
+            print(f"Ollama API недоступен по адресу {ollama_url}")
+            print("Убедитесь, что Ollama сервер запущен")
             return
     except Exception as e:
-        print(f"Не удается подключиться к VLLM API: {e}")
-        print("Убедитесь, что vLLM сервер запущен")
+        print(f"Не удается подключиться к Ollama API: {e}")
+        print("Убедитесь, что Ollama сервер запущен")
         return
 
     # Загрузка датасета
     print("Загружаем датасет...")
     try:
-        df = pd.read_csv('dataset_1937770_3.txt')
+        df = pd.read_csv('dataset_1937770_3.txt', sep=',', quoting=3, on_bad_lines='skip')
         print(f"Загружено {len(df)} записей")
+        print(f"Колонки: {list(df.columns)}")
+        print(f"Первые несколько строк:")
+        print(df.head())
     except Exception as e:
         print(f"Ошибка загрузки датасета: {e}")
         return
